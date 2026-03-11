@@ -1,0 +1,139 @@
+name: i2mv_stage1_normal
+tag: "r512-ortho-nv6-ele0-sd21-normal"
+exp_root_dir: "outputs"
+seed: 221
+
+data_cls: mvadapter.data.multiview.MultiviewDataModule
+data:
+  # [修正] 使用绝对路径指向原项目的 texture_ortho10view_easylight_objaverse
+  root_dir: "/data/xyp/MV-Adapter/mvadapter/data/texture_ortho10view_easylight_objaverse"
+  
+  # [修正] 使用绝对路径指向原项目的 json 列表
+  scene_list: "/data/xyp/MV-Adapter/mvadapter/data/objaverse_list_6w.json"
+  
+  # 背景颜色保持 gray (配合代码里的处理)
+  background_color: gray
+  
+  image_names: ["0000", "0004", "0001", "0002", "0003", "0005"]
+  
+  # 目标模态: normal
+  image_modality: normal
+  num_views: 6
+
+  # [修正] 使用绝对路径
+  prompt_db_path: "/data/xyp/MV-Adapter/mvadapter/data/objaverse_short_captions.json"
+  return_prompt: true
+
+  projection_type: ORTHO
+
+  source_image_modality: ["plucker"]
+  plucker_offset: 1.0
+  plucker_scale: 2.0
+
+  # [修正] Reference 相关的绝对路径
+  reference_root_dir: ["/data/xyp/MV-Adapter/mvadapter/data/texture_rand_easylight_objaverse"]
+  reference_scene_list: ["/data/xyp/MV-Adapter/mvadapter/data/objaverse_list_6w.json"]
+  reference_image_modality: color
+  reference_image_names: ["0000", "0001", "0002", "0003", "0004"]
+
+  # 调试通过后记得改回全量数据 [0, -8]
+  train_indices: [0, -8]
+  val_indices: [-8, null]
+  test_indices: [-8, null]
+
+  height: 512
+  width: 512
+
+  batch_size: 3
+  num_workers: 8
+
+system_cls: mvadapter.systems.mvadapter_image_sd.MVAdapterImageSDSystem
+system:
+  check_train_every_n_steps: 1000
+  cleanup_after_validation_step: true
+  cleanup_after_test_step: true
+
+  # Model / Adapter (SD2.1 Base)
+  pretrained_model_name_or_path: "stabilityai/stable-diffusion-2-1-base"
+  pretrained_vae_name_or_path: null
+  pretrained_adapter_name_or_path: null
+  
+  init_adapter_kwargs:
+    # Multi-view adapter
+    self_attn_processor: "mvadapter.models.attention_processor.DecoupledMVRowSelfAttnProcessor2_0"
+    # Condition encoder
+    cond_in_channels: 6
+    # For training
+    copy_attn_weights: true
+    zero_init_module_keys: ["to_out_mv", "to_out_ref"]
+
+  # Training
+  train_cond_encoder: true
+  trainable_modules: ["_mv", "_ref"]
+  prompt_drop_prob: 0.1
+  image_drop_prob: 0.1
+  cond_drop_prob: 0.1
+
+  # Noise sampler
+  shift_noise: true
+  shift_noise_mode: interpolated
+  shift_noise_scale: 8
+
+  # Evaluation
+  eval_seed: 42
+  eval_num_inference_steps: 30
+  eval_guidance_scale: 3.0
+  eval_height: ${data.height}
+  eval_width: ${data.width}
+
+  # Optimizer
+  optimizer:
+    name: AdamW
+    args:
+      lr: 5e-5
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+    params:
+      cond_encoder:
+        lr: 5e-5
+      unet:
+        lr: 5e-5
+
+  scheduler:
+    name: SequentialLR
+    interval: step
+    schedulers:
+      - name: LinearLR
+        interval: step
+        args:
+          start_factor: 1e-6
+          end_factor: 1.0
+          total_iters: 2000
+      - name: ConstantLR
+        interval: step
+        args:
+          factor: 1.0
+          total_iters: 9999999
+    milestones: [2000]
+
+trainer:
+  max_epochs: 15
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  val_check_interval: 2000
+  enable_progress_bar: true
+  precision: bf16-mixed
+  gradient_clip_val: 1.0
+  strategy: ddp
+  accumulate_grad_batches: 1
+
+checkpoint:
+  save_last: true
+  save_top_k: 6
+  # [新增] 必须指定监控指标
+  monitor: "train/loss"  # 或者是 "val/loss" (取决于你的 System 里 log 了什么，通常 train/loss 是肯定有的)
+  
+  # [新增] 指标是越小越好 (min) 还是越大越好 (max)
+  mode: "min"
+  
+  every_n_epochs: 1
